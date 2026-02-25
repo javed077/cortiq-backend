@@ -19,14 +19,28 @@ load_dotenv()
 app = FastAPI()
 
 # ======================
-# SAFE GROQ CLIENT
+# CORS (SAFE FOR DEPLOY)
+# ======================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "*"  # later replace with your vercel domain
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ======================
+# GROQ CLIENT
 # ======================
 
 def get_client():
     api_key = os.getenv("GROQ_API_KEY")
 
     if not api_key:
-        raise ValueError("GROQ_API_KEY is missing")
+        raise ValueError("GROQ_API_KEY missing")
 
     return Groq(api_key=api_key)
 
@@ -37,18 +51,6 @@ def get_client():
 analysis_cache = {}
 cache_timestamps = {}
 CACHE_TTL = 30  # seconds
-
-# ======================
-# CORS
-# ======================
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # ======================
 # INPUT MODEL
@@ -80,12 +82,16 @@ class DashboardOutput(BaseModel):
     insight: str
 
 # ======================
-# ROOT
+# ROOT ENDPOINTS
 # ======================
 
 @app.get("/")
 def root():
     return {"message": "Cortiq Health API running 🚀"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 # ======================
 # CACHE KEY
@@ -106,30 +112,29 @@ def generate_cache_key(data: StartupInput):
     return hashlib.md5(raw.encode()).hexdigest()
 
 # ======================
-# DASHBOARD ANALYSIS
+# MAIN ANALYSIS
 # ======================
 
 @app.post("/dashboard/analyze", response_model=DashboardOutput)
 def analyze_dashboard(data: StartupInput):
 
-    print("INPUT RECEIVED:", data)
+    print("INPUT:", data)
 
-    # ---------- CACHE ----------
+    # CACHE CHECK
     cache_key = generate_cache_key(data)
 
     if cache_key in analysis_cache:
         age = time.time() - cache_timestamps[cache_key]
         if age < CACHE_TTL:
-            print("⚡ Returning cached result")
+            print("⚡ Returning cached")
             return analysis_cache[cache_key]
 
-    # ==================================================
-    # DETERMINISTIC SCORING
-    # ==================================================
+    # =====================
+    # SCORING LOGIC
+    # =====================
 
     health_score = 70
 
-    # TEAM SIZE
     if data.team_size <= 2:
         health_score -= 15
     elif data.team_size <= 5:
@@ -137,20 +142,17 @@ def analyze_dashboard(data: StartupInput):
     elif data.team_size > 50:
         health_score += 5
 
-    # BUDGET
     budget = data.budget.lower()
     if "low" in budget or "0" in budget:
         health_score -= 15
-    elif "10 lakh" in budget or "high" in budget:
+    elif "high" in budget:
         health_score += 5
 
-    # IDEA QUALITY
     if len(data.idea) < 10:
         health_score -= 10
     else:
         health_score += 5
 
-    # CURRENT SITUATION
     situation = data.situation.lower()
     if "building" in situation:
         health_score += 3
@@ -159,15 +161,14 @@ def analyze_dashboard(data: StartupInput):
 
     health_score = max(0, min(100, health_score))
 
-    # SUB SCORES
     market_health = max(0, min(100, health_score - 5))
     execution_health = max(0, min(100, health_score + 3))
     finance_health = max(0, min(100, health_score - 8))
     growth_health = max(0, min(100, health_score + 2))
 
-    # ==================================================
-    # AI INSIGHTS
-    # ==================================================
+    # =====================
+    # AI PROMPT
+    # =====================
 
     prompt = f"""
 Startup details:
@@ -188,12 +189,24 @@ Return ONLY JSON:
 }}
 """
 
-    client = get_client()
+    try:
+        client = get_client()
+    except Exception as e:
+        return {
+            "health_score": health_score,
+            "market_health": market_health,
+            "execution_health": execution_health,
+            "finance_health": finance_health,
+            "growth_health": growth_health,
+            "biggest_problem": "Missing API key",
+            "improvements": ["Check Railway environment variables"],
+            "insight": str(e)
+        }
 
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
-            {"role": "system", "content": "Return JSON only."},
+            {"role": "system", "content": "Return JSON only"},
             {"role": "user", "content": prompt}
         ],
         temperature=0
@@ -201,7 +214,7 @@ Return ONLY JSON:
 
     content = response.choices[0].message.content
 
-    # SAFE JSON EXTRACTION
+    # SAFE JSON PARSE
     start = content.find("{")
     end = content.rfind("}") + 1
     if start != -1:
@@ -212,15 +225,10 @@ Return ONLY JSON:
     except:
         ai_result = {
             "biggest_problem": "AI formatting issue",
-            "improvements": [
-                "Retry request",
-                "Check input",
-                "Try again"
-            ],
-            "insight": "Fallback response."
+            "improvements": ["Retry", "Check input", "Try again"],
+            "insight": "Fallback response"
         }
 
-    # FINAL RESULT
     result = {
         "health_score": health_score,
         "market_health": market_health,
@@ -232,7 +240,6 @@ Return ONLY JSON:
         "insight": ai_result["insight"]
     }
 
-    # SAVE CACHE
     analysis_cache[cache_key] = result
     cache_timestamps[cache_key] = time.time()
 
