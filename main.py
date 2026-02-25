@@ -13,17 +13,27 @@ from groq import Groq
 # ======================
 # SETUP
 # ======================
-load_dotenv()
 
-client = Groq(
-    api_key=os.getenv("GROQ_API_KEY")
-)
+load_dotenv()
 
 app = FastAPI()
 
 # ======================
+# SAFE GROQ CLIENT
+# ======================
+
+def get_client():
+    api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        raise ValueError("GROQ_API_KEY is missing")
+
+    return Groq(api_key=api_key)
+
+# ======================
 # CACHE
 # ======================
+
 analysis_cache = {}
 cache_timestamps = {}
 CACHE_TTL = 30  # seconds
@@ -31,6 +41,7 @@ CACHE_TTL = 30  # seconds
 # ======================
 # CORS
 # ======================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,6 +53,7 @@ app.add_middleware(
 # ======================
 # INPUT MODEL
 # ======================
+
 class StartupInput(BaseModel):
     mode: str
     strategy_mode: str = ""
@@ -53,10 +65,10 @@ class StartupInput(BaseModel):
     launch_timeline: str = ""
     situation: str = ""
 
-
 # ======================
 # OUTPUT MODEL
 # ======================
+
 class DashboardOutput(BaseModel):
     health_score: int
     market_health: int
@@ -67,15 +79,18 @@ class DashboardOutput(BaseModel):
     improvements: List[str]
     insight: str
 
+# ======================
+# ROOT
+# ======================
 
 @app.get("/")
 def root():
     return {"message": "Cortiq Health API running 🚀"}
 
-
 # ======================
 # CACHE KEY
 # ======================
+
 def generate_cache_key(data: StartupInput):
     raw = f"""
 {data.mode}
@@ -90,10 +105,10 @@ def generate_cache_key(data: StartupInput):
 """
     return hashlib.md5(raw.encode()).hexdigest()
 
-
 # ======================
 # DASHBOARD ANALYSIS
 # ======================
+
 @app.post("/dashboard/analyze", response_model=DashboardOutput)
 def analyze_dashboard(data: StartupInput):
 
@@ -109,12 +124,12 @@ def analyze_dashboard(data: StartupInput):
             return analysis_cache[cache_key]
 
     # ==================================================
-    # 🔥 DETERMINISTIC SCORING (REAL FIX)
+    # DETERMINISTIC SCORING
     # ==================================================
 
     health_score = 70
 
-    # TEAM SIZE IMPACT
+    # TEAM SIZE
     if data.team_size <= 2:
         health_score -= 15
     elif data.team_size <= 5:
@@ -122,7 +137,7 @@ def analyze_dashboard(data: StartupInput):
     elif data.team_size > 50:
         health_score += 5
 
-    # BUDGET IMPACT
+    # BUDGET
     budget = data.budget.lower()
     if "low" in budget or "0" in budget:
         health_score -= 15
@@ -151,7 +166,7 @@ def analyze_dashboard(data: StartupInput):
     growth_health = max(0, min(100, health_score + 2))
 
     # ==================================================
-    # 🧠 AI ONLY FOR TEXT INSIGHT
+    # AI INSIGHTS
     # ==================================================
 
     prompt = f"""
@@ -172,6 +187,8 @@ Return ONLY JSON:
  "insight": ""
 }}
 """
+
+    client = get_client()
 
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
