@@ -4,76 +4,53 @@ from pydantic import BaseModel
 from typing import List
 import os
 import json
-import hashlib
-import time
-
 from dotenv import load_dotenv
 from groq import Groq
 
-# ======================
-# SETUP
-# ======================
-
+# ================= SETUP =================
 load_dotenv()
-
 app = FastAPI()
 
-# ======================
-# CORS (SAFE FOR DEPLOY)
-# ======================
-
+# ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "*"  # later replace with your vercel domain
-    ],
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ======================
-# GROQ CLIENT
-# ======================
-
+# ================= GROQ =================
 def get_client():
     api_key = os.getenv("GROQ_API_KEY")
-
     if not api_key:
         raise ValueError("GROQ_API_KEY missing")
-
     return Groq(api_key=api_key)
 
-# ======================
-# CACHE
-# ======================
-
-analysis_cache = {}
-cache_timestamps = {}
-CACHE_TTL = 30  # seconds
-
-# ======================
-# INPUT MODEL
-# ======================
-
+# ================= MODELS =================
 class StartupInput(BaseModel):
     mode: str
-    strategy_mode: str = ""
-    idea: str = ""
+    strategy_mode: str
+    idea: str
     customer: str
-    pricing: str
+    geography: str
+    tam: float
+    competitors: List[str]
+    pricing: float
+    cac: float
+    monthly_burn: float
+    current_revenue: float
+    available_budget: float
     team_size: int
-    budget: str
-    launch_timeline: str = ""
-    situation: str = ""
-
-# ======================
-# OUTPUT MODEL
-# ======================
+    founder_experience: str
+    situation: str
 
 class DashboardOutput(BaseModel):
     health_score: int
+    risk_score: float
+    runway_months: float
     market_health: int
+    competition_health: int
     execution_health: int
     finance_health: int
     growth_health: int
@@ -81,166 +58,199 @@ class DashboardOutput(BaseModel):
     improvements: List[str]
     insight: str
 
-# ======================
-# ROOT ENDPOINTS
-# ======================
-
-@app.get("/")
-def root():
-    return {"message": "Cortiq Health API running 🚀"}
-
+# ================= HEALTH =================
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ======================
-# CACHE KEY
-# ======================
+# ================= SCORING =================
+def calculate_runway(budget, burn):
+    if burn <= 0:
+        return 24
+    return round(budget / burn, 1)
 
-def generate_cache_key(data: StartupInput):
-    raw = f"""
-{data.mode}
-{data.strategy_mode}
-{data.idea}
-{data.customer}
-{data.pricing}
-{data.team_size}
-{data.budget}
-{data.launch_timeline}
-{data.situation}
-"""
-    return hashlib.md5(raw.encode()).hexdigest()
+def score_market(tam):
+    if tam > 1_000_000_000: return 90
+    if tam > 100_000_000: return 75
+    if tam > 10_000_000: return 60
+    return 40
 
-# ======================
-# MAIN ANALYSIS
-# ======================
+def score_competition(competitors):
+    count = len(competitors)
+    if count == 0: return 85
+    if count < 3: return 70
+    if count < 6: return 55
+    return 35
 
+def score_team(size, experience):
+    score = 50
+    if size >= 5: score += 15
+    elif size >= 3: score += 10
+    if experience == "repeat": score += 20
+    elif experience == "experienced": score += 10
+    return min(score, 95)
+
+def score_finance(runway, revenue, burn):
+    score = 50
+    if runway > 12: score += 20
+    elif runway > 6: score += 10
+    if revenue > burn: score += 20
+    return min(score, 95)
+
+def calculate_risk(m, c, t, f):
+    weighted = m*0.25 + c*0.20 + t*0.25 + f*0.30
+    return round(100 - weighted, 1)
+
+# ================= ANALYZE =================
 @app.post("/dashboard/analyze", response_model=DashboardOutput)
-def analyze_dashboard(data: StartupInput):
+def analyze(data: StartupInput):
 
-    print("INPUT:", data)
+    runway = calculate_runway(data.available_budget, data.monthly_burn)
+    m = score_market(data.tam)
+    c = score_competition(data.competitors)
+    t = score_team(data.team_size, data.founder_experience)
+    f = score_finance(runway, data.current_revenue, data.monthly_burn)
 
-    # CACHE CHECK
-    cache_key = generate_cache_key(data)
+    risk = calculate_risk(m, c, t, f)
+    health = int(max(0, min(100, 100 - risk)))
+    growth = int((m + t) / 2)
 
-    if cache_key in analysis_cache:
-        age = time.time() - cache_timestamps[cache_key]
-        if age < CACHE_TTL:
-            print("⚡ Returning cached")
-            return analysis_cache[cache_key]
-
-    # =====================
-    # SCORING LOGIC
-    # =====================
-
-    health_score = 70
-
-    if data.team_size <= 2:
-        health_score -= 15
-    elif data.team_size <= 5:
-        health_score -= 5
-    elif data.team_size > 50:
-        health_score += 5
-
-    budget = data.budget.lower()
-    if "low" in budget or "0" in budget:
-        health_score -= 15
-    elif "high" in budget:
-        health_score += 5
-
-    if len(data.idea) < 10:
-        health_score -= 10
-    else:
-        health_score += 5
-
-    situation = data.situation.lower()
-    if "building" in situation:
-        health_score += 3
-    if "idea" in situation:
-        health_score -= 5
-
-    health_score = max(0, min(100, health_score))
-
-    market_health = max(0, min(100, health_score - 5))
-    execution_health = max(0, min(100, health_score + 3))
-    finance_health = max(0, min(100, health_score - 8))
-    growth_health = max(0, min(100, health_score + 2))
-
-    # =====================
-    # AI PROMPT
-    # =====================
-
-    prompt = f"""
-Startup details:
-
-Idea: {data.idea}
-Customer: {data.customer}
-Pricing: {data.pricing}
-Team size: {data.team_size}
-Budget: {data.budget}
-Situation: {data.situation}
-
-Return ONLY JSON:
-
-{{
- "biggest_problem": "",
- "improvements": ["", "", ""],
- "insight": ""
-}}
-"""
+    # ---------- SAFE DEFAULT ----------
+    ai_result = {
+        "biggest_problem": "Structural positioning and capital efficiency need refinement.",
+        "improvements": [
+            "Clarify market differentiation strategy",
+            "Improve capital efficiency and extend runway",
+            "Strengthen execution capability through focused hiring"
+        ],
+        "insight": "The startup demonstrates moderate structural potential but requires improved strategic focus, capital efficiency, and operational discipline before aggressive scaling."
+    }
 
     try:
         client = get_client()
+
+        prompt = f"""
+You are a senior startup strategist.
+
+Return STRICT valid JSON only.
+No markdown.
+No explanation.
+No ellipsis.
+No placeholders.
+
+Minimum 3 actionable improvements.
+Insight must be minimum 40 words.
+
+Format:
+
+{{
+"biggest_problem": "specific structural weakness",
+"improvements": ["action 1", "action 2", "action 3"],
+"insight": "deep strategic explanation"
+}}
+
+Startup Metrics:
+Market Score: {m}
+Competition Score: {c}
+Team Score: {t}
+Finance Score: {f}
+Risk Score: {risk}
+"""
+
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": "You are a strict JSON API."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        start = content.find("{")
+        end = content.rfind("}") + 1
+
+        if start != -1 and end != -1:
+            parsed = json.loads(content[start:end])
+
+            if (
+                isinstance(parsed, dict)
+                and parsed.get("biggest_problem")
+                and parsed["biggest_problem"] != "..."
+                and isinstance(parsed.get("improvements"), list)
+                and len(parsed["improvements"]) >= 3
+                and len(parsed.get("insight", "")) > 40
+            ):
+                ai_result = parsed
+
     except Exception as e:
-        return {
-            "health_score": health_score,
-            "market_health": market_health,
-            "execution_health": execution_health,
-            "finance_health": finance_health,
-            "growth_health": growth_health,
-            "biggest_problem": "Missing API key",
-            "improvements": ["Check Railway environment variables"],
-            "insight": str(e)
-        }
+        print("AI ERROR:", str(e))
 
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": "Return JSON only"},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0
-    )
-
-    content = response.choices[0].message.content
-
-    # SAFE JSON PARSE
-    start = content.find("{")
-    end = content.rfind("}") + 1
-    if start != -1:
-        content = content[start:end]
-
-    try:
-        ai_result = json.loads(content)
-    except:
-        ai_result = {
-            "biggest_problem": "AI formatting issue",
-            "improvements": ["Retry", "Check input", "Try again"],
-            "insight": "Fallback response"
-        }
-
-    result = {
-        "health_score": health_score,
-        "market_health": market_health,
-        "execution_health": execution_health,
-        "finance_health": finance_health,
-        "growth_health": growth_health,
+    return {
+        "health_score": health,
+        "risk_score": risk,
+        "runway_months": runway,
+        "market_health": m,
+        "competition_health": c,
+        "execution_health": t,
+        "finance_health": f,
+        "growth_health": growth,
         "biggest_problem": ai_result["biggest_problem"],
         "improvements": ai_result["improvements"],
         "insight": ai_result["insight"]
     }
 
-    analysis_cache[cache_key] = result
-    cache_timestamps[cache_key] = time.time()
+# ================= INTERACTIVE AI COACH =================
+@app.post("/coach/chat")
+def coach_chat(payload: dict):
 
-    return result
+    message = payload.get("message", "")
+    metrics = payload.get("metrics", {})
+
+    safe_reply = (
+        "Focus on strengthening differentiation, improving capital efficiency, "
+        "and reinforcing execution discipline to increase structural strength."
+    )
+
+    try:
+        client = get_client()
+
+        prompt = f"""
+You are Cortiq AI Coach.
+Act like a strategic startup advisor.
+
+Startup Metrics:
+{json.dumps(metrics)}
+
+User Question:
+{message}
+
+Respond:
+- Clear
+- Direct
+- Strategic
+- Actionable
+- No markdown
+- No fluff
+"""
+
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": "You are a high-level startup strategist."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.4
+        )
+
+        reply = response.choices[0].message.content.strip()
+
+        if len(reply) < 20:
+            return {"reply": safe_reply}
+
+        return {"reply": reply}
+
+    except Exception as e:
+        print("COACH ERROR:", str(e))
+        return {"reply": safe_reply}
