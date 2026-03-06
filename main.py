@@ -9,16 +9,30 @@ from groq import Groq
 
 # ================= SETUP =================
 load_dotenv()
-app = FastAPI()
+
+app = FastAPI(title="Cortiq Backend API")
 
 # ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://cortiq-frontend.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ================= ROOT =================
+@app.get("/")
+def root():
+    return {"message": "Cortiq backend running"}
+
+# ================= HEALTH =================
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 # ================= GROQ =================
 def get_client():
@@ -45,6 +59,7 @@ class StartupInput(BaseModel):
     founder_experience: str
     situation: str
 
+
 class DashboardOutput(BaseModel):
     health_score: int
     risk_score: float
@@ -58,10 +73,6 @@ class DashboardOutput(BaseModel):
     improvements: List[str]
     insight: str
 
-# ================= HEALTH =================
-@app.get("/health")
-def health():
-    return {"status": "ok"}
 
 # ================= SCORING =================
 def calculate_runway(budget, burn):
@@ -69,43 +80,68 @@ def calculate_runway(budget, burn):
         return 24
     return round(budget / burn, 1)
 
+
 def score_market(tam):
-    if tam > 1_000_000_000: return 90
-    if tam > 100_000_000: return 75
-    if tam > 10_000_000: return 60
+    if tam > 1_000_000_000:
+        return 90
+    if tam > 100_000_000:
+        return 75
+    if tam > 10_000_000:
+        return 60
     return 40
+
 
 def score_competition(competitors):
     count = len(competitors)
-    if count == 0: return 85
-    if count < 3: return 70
-    if count < 6: return 55
+    if count == 0:
+        return 85
+    if count < 3:
+        return 70
+    if count < 6:
+        return 55
     return 35
+
 
 def score_team(size, experience):
     score = 50
-    if size >= 5: score += 15
-    elif size >= 3: score += 10
-    if experience == "repeat": score += 20
-    elif experience == "experienced": score += 10
+    if size >= 5:
+        score += 15
+    elif size >= 3:
+        score += 10
+
+    if experience == "repeat":
+        score += 20
+    elif experience == "experienced":
+        score += 10
+
     return min(score, 95)
+
 
 def score_finance(runway, revenue, burn):
     score = 50
-    if runway > 12: score += 20
-    elif runway > 6: score += 10
-    if revenue > burn: score += 20
+
+    if runway > 12:
+        score += 20
+    elif runway > 6:
+        score += 10
+
+    if revenue > burn:
+        score += 20
+
     return min(score, 95)
 
+
 def calculate_risk(m, c, t, f):
-    weighted = m*0.25 + c*0.20 + t*0.25 + f*0.30
+    weighted = m * 0.25 + c * 0.20 + t * 0.25 + f * 0.30
     return round(100 - weighted, 1)
+
 
 # ================= ANALYZE =================
 @app.post("/dashboard/analyze", response_model=DashboardOutput)
 def analyze(data: StartupInput):
 
     runway = calculate_runway(data.available_budget, data.monthly_burn)
+
     m = score_market(data.tam)
     c = score_competition(data.competitors)
     t = score_team(data.team_size, data.founder_experience)
@@ -115,15 +151,14 @@ def analyze(data: StartupInput):
     health = int(max(0, min(100, 100 - risk)))
     growth = int((m + t) / 2)
 
-    # ---------- SAFE DEFAULT ----------
     ai_result = {
-        "biggest_problem": "Structural positioning and capital efficiency need refinement.",
+        "biggest_problem": "Structural positioning and capital efficiency require refinement.",
         "improvements": [
             "Clarify market differentiation strategy",
             "Improve capital efficiency and extend runway",
-            "Strengthen execution capability through focused hiring"
+            "Strengthen execution capability with focused hiring"
         ],
-        "insight": "The startup demonstrates moderate structural potential but requires improved strategic focus, capital efficiency, and operational discipline before aggressive scaling."
+        "insight": "The startup shows moderate potential but needs stronger strategic positioning, improved financial discipline, and clearer differentiation before scaling aggressively."
     }
 
     try:
@@ -133,23 +168,14 @@ def analyze(data: StartupInput):
 You are a senior startup strategist.
 
 Return STRICT valid JSON only.
-No markdown.
-No explanation.
-No ellipsis.
-No placeholders.
-
-Minimum 3 actionable improvements.
-Insight must be minimum 40 words.
-
-Format:
 
 {{
-"biggest_problem": "specific structural weakness",
-"improvements": ["action 1", "action 2", "action 3"],
-"insight": "deep strategic explanation"
+"biggest_problem": "...",
+"improvements": ["...","...","..."],
+"insight": "..."
 }}
 
-Startup Metrics:
+Startup Metrics
 Market Score: {m}
 Competition Score: {c}
 Team Score: {t}
@@ -177,7 +203,6 @@ Risk Score: {risk}
             if (
                 isinstance(parsed, dict)
                 and parsed.get("biggest_problem")
-                and parsed["biggest_problem"] != "..."
                 and isinstance(parsed.get("improvements"), list)
                 and len(parsed["improvements"]) >= 3
                 and len(parsed.get("insight", "")) > 40
@@ -201,7 +226,8 @@ Risk Score: {risk}
         "insight": ai_result["insight"]
     }
 
-# ================= INTERACTIVE AI COACH =================
+
+# ================= AI COACH =================
 @app.post("/coach/chat")
 def coach_chat(payload: dict):
 
@@ -209,8 +235,8 @@ def coach_chat(payload: dict):
     metrics = payload.get("metrics", {})
 
     safe_reply = (
-        "Focus on strengthening differentiation, improving capital efficiency, "
-        "and reinforcing execution discipline to increase structural strength."
+        "Focus on improving differentiation, capital efficiency, "
+        "and execution discipline to strengthen the startup."
     )
 
     try:
@@ -218,7 +244,6 @@ def coach_chat(payload: dict):
 
         prompt = f"""
 You are Cortiq AI Coach.
-Act like a strategic startup advisor.
 
 Startup Metrics:
 {json.dumps(metrics)}
@@ -226,19 +251,13 @@ Startup Metrics:
 User Question:
 {message}
 
-Respond:
-- Clear
-- Direct
-- Strategic
-- Actionable
-- No markdown
-- No fluff
+Respond with clear strategic advice.
 """
 
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
-                {"role": "system", "content": "You are a high-level startup strategist."},
+                {"role": "system", "content": "You are a startup strategist."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.4
