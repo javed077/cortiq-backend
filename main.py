@@ -1018,3 +1018,113 @@ def pitch_deck_download(payload: dict):
         # clean up temp dir after a short delay to allow FileResponse to stream
         import threading
         threading.Timer(10, shutil.rmtree, args=[tmp_dir], kwargs={"ignore_errors": True}).start()
+
+        # ── PASTE AT THE BOTTOM OF main.py ───────────────────────────────────────────
+
+
+_DIGEST_FALLBACK = {
+    "digest": """WEEKLY STARTUP DIGEST
+━━━━━━━━━━━━━━━━━━━━
+
+📊 SCORE THIS WEEK
+No data yet — run your first analysis to start tracking.
+
+🔥 STREAK
+Keep coming back each week to build your streak.
+
+⬡ THIS WEEK'S FOCUS
+Run a full analysis and check each health dimension.
+Identify your single biggest bottleneck and work on it.
+
+★ NEXT MILESTONE
+Complete your first analysis to unlock your first achievement.
+
+See you next week. Stay consistent."""
+}
+
+@app.post("/weekly-digest")
+def weekly_digest(payload: dict):
+    history      = payload.get("history", [])
+    streak       = payload.get("streak", {})
+    achievements = payload.get("achievements", [])
+
+    if not history:
+        return _DIGEST_FALLBACK
+
+    latest = history[-1] if history else {}
+    prev   = history[-2] if len(history) >= 2 else {}
+
+    delta      = latest.get("health_score", 0) - prev.get("health_score", 0) if prev else None
+    delta_str  = f"+{delta}" if delta and delta > 0 else str(delta) if delta is not None else "first entry"
+    unlocked   = [a for a in achievements if a.get("unlocked")]
+    locked     = [a for a in achievements if not a.get("unlocked")]
+    next_ach   = locked[0] if locked else None
+
+    # find weakest dimension
+    dims = {
+        "market":      latest.get("market_health", 0),
+        "execution":   latest.get("execution_health", 0),
+        "finance":     latest.get("finance_health", 0),
+        "growth":      latest.get("growth_health", 0),
+        "competition": latest.get("competition_health", 0),
+    }
+    weakest = min(dims, key=dims.get)
+
+    system = (
+        "You are a startup coach writing a weekly digest for a founder. "
+        "Be direct, specific, encouraging but honest. "
+        "Use plain text with section headers — no markdown, no bullet symbols, "
+        "just clean readable text with line breaks."
+    )
+
+    user = f"""
+Startup: {latest.get("idea", "the startup")}
+Current health score: {latest.get("health_score", 0)} ({delta_str} vs last week)
+Streak: {streak.get("current", 0)} weeks  (longest: {streak.get("longest", 0)})
+Total check-ins: {streak.get("totalCheckins", 0)}
+Achievements unlocked: {len(unlocked)}/{len(achievements)}
+Next achievement: {next_ach.get("title") if next_ach else "all unlocked!"}
+
+Health breakdown:
+  Market: {latest.get("market_health", 0)}
+  Execution: {latest.get("execution_health", 0)}
+  Finance: {latest.get("finance_health", 0)}
+  Growth: {latest.get("growth_health", 0)}
+  Competition: {latest.get("competition_health", 0)}
+
+Weakest dimension this week: {weakest} ({dims[weakest]})
+Score history (last 5): {[h.get("health_score") for h in history[-5:]]}
+
+Write a concise weekly digest with these sections:
+1. SCORE THIS WEEK — what the number means, is it trending right
+2. BIGGEST WIN — something positive from this week's data
+3. THIS WEEK'S FOCUS — one specific, actionable priority based on the weakest dimension
+4. STREAK UPDATE — motivate them to keep the streak going
+5. NEXT MILESTONE — what achievement or score target to aim for
+
+Keep each section to 2-3 sentences. Tone: direct startup coach, not corporate fluff.
+"""
+
+    result = llm(system, user, temperature=0.6, max_tokens=800)
+
+    if result and result.get("digest"):
+        return result
+
+    # llm() returns parsed JSON — for free-form text we need a different approach
+    # call Groq directly for plain text response
+    try:
+        client = get_client()
+        resp = client.chat.completions.create(
+            model=MODEL,
+            max_tokens=800,
+            temperature=0.6,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+        )
+        text = resp.choices[0].message.content.strip()
+        return {"digest": text}
+    except Exception as e:
+        log.error("weekly-digest failed: %s", e)
+        return _DIGEST_FALLBACK
